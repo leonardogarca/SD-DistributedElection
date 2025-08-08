@@ -1,7 +1,4 @@
-package urn;
-
 import common.*;
-import syncprimitive.*;
 import com.google.gson.Gson;
 import java.util.*;
 import java.nio.file.Files;
@@ -10,9 +7,13 @@ import java.nio.file.Paths;
 public class UrnNodeApplication {
     public static void main(String[] args) throws Exception {
         // Load configuration
+        if (args.length < 1) {
+            System.err.println("Usage: java UrnNodeApplication <config-file>");
+            System.exit(1);
+        }
         UrnConfig config = new Gson().fromJson(
-                new String(Files.readAllBytes(Paths.get("urn.config.json"))),
-                UrnConfig.class
+            new String(Files.readAllBytes(Paths.get(args[0]))),
+            UrnConfig.class
         );
 
         // Initialize SyncPrimitive components
@@ -60,7 +61,11 @@ class RegionalTallyProcessor {
         // Submit local BU
         for (BuData bu : localBus) {
             byte[] buJson = new Gson().toJson(bu).getBytes();
-            queue.produce(buJson);
+            try {
+                queue.produce(buJson);
+            } catch (org.apache.zookeeper.KeeperException | InterruptedException e) {
+                e.printStackTrace();
+            }
         }
     }
 
@@ -74,11 +79,6 @@ class RegionalTallyProcessor {
             byte[] data;
             while ((data = queue.consumeBytes()) != null) {
                 BuData bu = new Gson().fromJson(new String(data), BuData.class);
-
-                if (!CryptoUtils.verify(bu)) {
-                    System.out.println("Invalid signature in BU from " + bu.sectionId);
-                    continue;
-                }
 
                 for (Map.Entry<String, Integer> entry : bu.votes.entrySet()) {
                     consolidatedVotes.merge(entry.getKey(), entry.getValue(), Integer::sum);

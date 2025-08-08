@@ -1,3 +1,4 @@
+package common;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
@@ -111,15 +112,12 @@ public class SyncPrimitive implements Watcher {
      * Producer-Consumer Queue: A distributed FIFO queue.
      */
     static public class Queue extends SyncPrimitive {
-        Queue(String address, String name) {
+        public Queue(String address, String name) {
             super(address);
             this.root = name;
             if (zk != null) {
                 try {
-                    Stat s = zk.exists(root, false);
-                    if (s == null) {
-                        zk.create(root, new byte[0], Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
-                    }
+                    ensurePathExists(root);
                 } catch (KeeperException | InterruptedException e) {
                     System.out.println("Keeper exception when instantiating queue: " + e.toString());
                 }
@@ -178,10 +176,7 @@ public class SyncPrimitive implements Watcher {
             this.root = name;
             if (zk != null) {
                 try {
-                    Stat s = zk.exists(root, false);
-                    if (s == null) {
-                        zk.create(root, new byte[0], Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
-                    }
+                    ensurePathExists(root);
                 } catch (KeeperException | InterruptedException e) {
                     System.out.println("Keeper exception when instantiating lock: " + e.toString());
                 }
@@ -260,10 +255,7 @@ public class SyncPrimitive implements Watcher {
             this.id = Integer.toString(id);
             if (zk != null) {
                 try {
-                    Stat s1 = zk.exists(root, false);
-                    if (s1 == null) {
-                        zk.create(root, new byte[0], Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
-                    }
+                    ensurePathExists(root);
                 } catch (KeeperException | InterruptedException e) {
                     System.out.println("Keeper exception when instantiating leader election: " + e.toString());
                 }
@@ -419,6 +411,19 @@ public class SyncPrimitive implements Watcher {
             }
         } catch (KeeperException | InterruptedException e) {
             e.printStackTrace();
+        }
+    }
+
+    private static void ensurePathExists(String path) throws KeeperException, InterruptedException {
+        String[] parts = path.split("/");
+        String current = "";
+        for (String part : parts) {
+            if (part.isEmpty()) continue;
+            current += "/" + part;
+            Stat s = zk.exists(current, false);
+            if (s == null) {
+                zk.create(current, new byte[0], Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
+            }
         }
     }
 
