@@ -52,17 +52,14 @@ public class SyncPrimitive implements Watcher {
         int size;
         String name;
 
-        Barrier(String address, String root, int size) {
+        public Barrier(String address, String root, int size) {
             super(address);
             this.root = root;
             this.size = size;
 
             if (zk != null) {
                 try {
-                    Stat s = zk.exists(root, false);
-                    if (s == null) {
-                        zk.create(root, new byte[0], Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
-                    }
+                    ensurePathExists(root);
                 } catch (KeeperException | InterruptedException e) {
                     System.out.println("Keeper exception when instantiating barrier: " + e.toString());
                 }
@@ -75,7 +72,7 @@ public class SyncPrimitive implements Watcher {
             }
         }
 
-        boolean enter() throws KeeperException, InterruptedException{
+        public boolean enter() throws KeeperException, InterruptedException{
             zk.create(root + "/" + name, new byte[0], Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL_SEQUENTIAL);
             while (true) {
                 synchronized (mutex) {
@@ -141,7 +138,7 @@ public class SyncPrimitive implements Watcher {
                 synchronized (mutex) {
                     List<String> list = zk.getChildren(root, true); // Set a watch
                     if (list.isEmpty()) {
-                        mutex.wait(); // Wait for notification
+                        return null;
                     } else {
                         Collections.sort(list); // Sort to find the oldest element
                         String minString = list.get(0);

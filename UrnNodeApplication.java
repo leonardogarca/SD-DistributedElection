@@ -20,12 +20,14 @@ public class UrnNodeApplication {
         String zkAddress = "127.0.0.1:2181";
         String region = config.region;
         String urnId = config.urnId;
+        int groupSize = config.groupSize;
 
         SyncPrimitive.Leader leader = new SyncPrimitive.Leader(zkAddress, "/election/" + region, "/leader", config.id);
         SyncPrimitive.Lock lock = new SyncPrimitive.Lock(zkAddress, "/tallies/" + region);
         SyncPrimitive.Queue queue = new SyncPrimitive.Queue(zkAddress, "/queues/" + region);
+        SyncPrimitive.Barrier barrier = new SyncPrimitive.Barrier(zkAddress, "/urns/" + region, groupSize);
 
-        RegionalTallyProcessor processor = new RegionalTallyProcessor(region, urnId, lock, queue);
+        RegionalTallyProcessor processor = new RegionalTallyProcessor(region, urnId, lock, queue, barrier);
 
         // Participate in election
         new Thread(() -> {
@@ -47,14 +49,16 @@ class RegionalTallyProcessor {
     private final String urnId;
     private final SyncPrimitive.Lock lock;
     private final SyncPrimitive.Queue queue;
+    private final SyncPrimitive.Barrier barrier;
     private final List<BuData> localBus;
     private RegionalTally currentTally;
 
-    public RegionalTallyProcessor(String region, String urnId, SyncPrimitive.Lock lock, SyncPrimitive.Queue queue) {
+    public RegionalTallyProcessor(String region, String urnId, SyncPrimitive.Lock lock, SyncPrimitive.Queue queue, SyncPrimitive.Barrier barrier) throws Exception {
         this.region = region;
         this.urnId = urnId;
         this.lock = lock;
         this.queue = queue;
+        this.barrier = barrier;
         this.localBus = BuReader.readLocalBUs(region, urnId);
         this.currentTally = new RegionalTally(region);
 
@@ -67,15 +71,21 @@ class RegionalTallyProcessor {
                 e.printStackTrace();
             }
         }
+        System.out.println(urnId + " has submitted its BU and is waiting for the group to finish.");        
+        barrier.enter(); // Wait for all urns to submit their BUs
+
     }
 
     public void isLeader() throws Exception {
         System.out.println(urnId + " is the LEADER of region " + region);
 
-        if (!lock.lock()) return;
+        while (!lock.lock()) {
+            System.out.println("Leader could not acquire lock, retrying in 1 second...");
+            Thread.sleep(1000); // Wait 1 second before retrying
+        }
         try {
             Map<String, Integer> consolidatedVotes = new HashMap<>();
-
+            System.out.println("Consolidating votes...");
             byte[] data;
             while ((data = queue.consumeBytes()) != null) {
                 BuData bu = new Gson().fromJson(new String(data), BuData.class);
@@ -131,5 +141,6 @@ class RegionalTallyProcessor {
 class UrnConfig {
     String urnId;
     String region;
+    int groupSize;
     int id;
 }

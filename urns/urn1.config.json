@@ -1,5 +1,6 @@
 {
   "urnId": "urn-101",
   "region": "SP",
+  "groupSize": 2,
   "id": 1
 }
