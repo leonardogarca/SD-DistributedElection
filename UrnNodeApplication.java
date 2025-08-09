@@ -52,6 +52,7 @@ class RegionalTallyProcessor {
     private final SyncPrimitive.Barrier barrier;
     private final List<BuData> localBus;
     private RegionalTally currentTally;
+    private final Gson gson = new Gson();
 
     public RegionalTallyProcessor(String region, String urnId, SyncPrimitive.Lock lock, SyncPrimitive.Queue queue, SyncPrimitive.Barrier barrier) throws Exception {
         this.region = region;
@@ -64,7 +65,7 @@ class RegionalTallyProcessor {
 
         // Submit local BU
         for (BuData bu : localBus) {
-            byte[] buJson = new Gson().toJson(bu).getBytes();
+            byte[] buJson = gson.toJson(bu).getBytes();
             try {
                 queue.produce(buJson);
             } catch (org.apache.zookeeper.KeeperException | InterruptedException e) {
@@ -88,7 +89,7 @@ class RegionalTallyProcessor {
             System.out.println("Consolidating votes...");
             byte[] data;
             while ((data = queue.consumeBytes()) != null) {
-                BuData bu = new Gson().fromJson(new String(data), BuData.class);
+                BuData bu = gson.fromJson(new String(data), BuData.class);
 
                 for (Map.Entry<String, Integer> entry : bu.votes.entrySet()) {
                     consolidatedVotes.merge(entry.getKey(), entry.getValue(), Integer::sum);
@@ -97,7 +98,7 @@ class RegionalTallyProcessor {
 
             currentTally.votes = consolidatedVotes;
             String path = "regional_tally_" + region + ".json";
-            Files.write(Paths.get(path), new Gson().toJson(currentTally).getBytes());
+            Files.write(Paths.get(path), gson.toJson(currentTally).getBytes());
             System.out.println("Tally written to " + path);
         } finally {
             lock.unlock();
@@ -117,7 +118,7 @@ class RegionalTallyProcessor {
                     }
 
                     String tallyJson = new String(Files.readAllBytes(Paths.get(path)));
-                    RegionalTally latestTally = new Gson().fromJson(tallyJson, RegionalTally.class);
+                    RegionalTally latestTally = gson.fromJson(tallyJson, RegionalTally.class);
                     
                     Map<String, Integer> expected = new HashMap<>();
                     for (BuData bu : localBus) {
