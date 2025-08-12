@@ -78,7 +78,9 @@ public class SyncPrimitive implements Watcher {
                 synchronized (mutex) {
                     List<String> list = zk.getChildren(root, true);
                     if (list.size() < size) {
-                        mutex.wait(); // Wait for a notification on the root node
+                        // Precisei botar para esperar um tempo fixo, senão tinha urnas que ficavam esperando eternamente
+                        // Dsclpa prof
+                        mutex.wait(1000); 
                     } else {
                         return true;
                     }
