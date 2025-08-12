@@ -5,8 +5,8 @@ import java.util.Map;
 
 public class RegionalTally {
     public String region;
-    public Map<String, Integer> votes; // total sum
-    public Map<String, BuData> urnBus; // urnId -> BuData
+    public Map<String, Integer> votes; // votos por candidato
+    public Map<String, BuData> urnBus; // BUs que contribuíram para a apuração
 
     public RegionalTally(String region) {
         this.region = region;

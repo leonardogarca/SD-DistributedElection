@@ -1,6 +1,5 @@
 package common;
 
-
 import java.util.Map;
 
 public class BuData {
