@@ -6,142 +6,160 @@ import java.nio.file.Paths;
 
 public class UrnNodeApplication {
     public static void main(String[] args) throws Exception {
-        // Load configuration
         if (args.length < 1) {
             System.err.println("Usage: java UrnNodeApplication <config-file>");
             System.exit(1);
         }
-        UrnConfig config = new Gson().fromJson(
-            new String(Files.readAllBytes(Paths.get(args[0]))),
-            UrnConfig.class
-        );
 
-        // Initialize SyncPrimitive components
-        String zkAddress = "127.0.0.1:2181";
-        String region = config.region;
-        String urnId = config.urnId;
-        int groupSize = config.groupSize;
+        UrnConfig config = loadConfig(args[0]);
+        UrnNode node = new UrnNode(config);
+        node.start();
+    }
 
-        SyncPrimitive.Leader leader = new SyncPrimitive.Leader(zkAddress, "/election/" + region, "/leader", config.id);
-        SyncPrimitive.Lock lock = new SyncPrimitive.Lock(zkAddress, "/tallies/" + region);
-        SyncPrimitive.Queue queue = new SyncPrimitive.Queue(zkAddress, "/queues/" + region);
-        SyncPrimitive.Barrier barrier = new SyncPrimitive.Barrier(zkAddress, "/urns/" + region, groupSize);
-
-        RegionalTallyProcessor processor = new RegionalTallyProcessor(region, urnId, lock, queue, barrier);
-
-        // Participate in election
-        new Thread(() -> {
-            try {
-                leader.elect();
-                processor.isLeader();
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
-        }).start();
-
-        // Start follower behavior in parallel
-        processor.notLeader();
+    private static UrnConfig loadConfig(String configFile) throws Exception {
+        String json = new String(Files.readAllBytes(Paths.get(configFile)));
+        return new Gson().fromJson(json, UrnConfig.class);
     }
 }
 
-class RegionalTallyProcessor {
-    private final String region;
-    private final String urnId;
+class UrnNode {
+    private final UrnConfig config;
+    private final String zkAddress = "127.0.0.1:2181";
+    private final SyncPrimitive.Leader leader;
     private final SyncPrimitive.Lock lock;
     private final SyncPrimitive.Queue queue;
     private final SyncPrimitive.Barrier barrier;
-    private final List<BuData> localBus;
-    private RegionalTally currentTally;
+    private final SyncPrimitive.DataStore dataStore;
+    private final BuData localBus;
     private final Gson gson = new Gson();
 
-    public RegionalTallyProcessor(String region, String urnId, SyncPrimitive.Lock lock, SyncPrimitive.Queue queue, SyncPrimitive.Barrier barrier) throws Exception {
-        this.region = region;
-        this.urnId = urnId;
-        this.lock = lock;
-        this.queue = queue;
-        this.barrier = barrier;
-        this.localBus = BuReader.readLocalBUs(region, urnId);
-        this.currentTally = new RegionalTally(region);
-
-        // Submit local BU
-        for (BuData bu : localBus) {
-            byte[] buJson = gson.toJson(bu).getBytes();
-            try {
-                queue.produce(buJson);
-            } catch (org.apache.zookeeper.KeeperException | InterruptedException e) {
-                e.printStackTrace();
-            }
-        }
-        System.out.println(urnId + " has submitted its BU and is waiting for the group to finish.");        
-        barrier.enter(); // Wait for all urns to submit their BUs
-
+    public UrnNode(UrnConfig config) throws Exception {
+        this.config = config;
+        this.leader = new SyncPrimitive.Leader(zkAddress, "/election/" + config.region, "/leader", config.id);
+        this.lock = new SyncPrimitive.Lock(zkAddress, "/tallies/total");
+        this.queue = new SyncPrimitive.Queue(zkAddress, "/queues/" + config.region);
+        this.barrier = new SyncPrimitive.Barrier(zkAddress, "/urns/" + config.region, config.groupSize);
+        this.dataStore = new SyncPrimitive.DataStore(zkAddress);
+        this.localBus = BuReader.readLocalBU(config);
     }
 
-    public void isLeader() throws Exception {
-        System.out.println(urnId + " is the LEADER of region " + region);
+    public void start() throws Exception {
+        // Manda BU local para o Zookeeper
+        submitLocalBu();
 
-        while (!lock.lock()) {
-            System.out.println("Leader could not acquire lock, retrying in 1 second...");
-            Thread.sleep(1000); // Wait 1 second before retrying
-        }
+        // Espera que todas as urnas do grupo enviem seus votos para continuar
+        waitForAllUrns();
+        
+        // Como o processo de lider é bloquante, rodamos em uma thread separada
+        // (O SyncPrimitive do laboratório é assim, não reclama comigo)
+        new Thread(this::tryBecomeLeader).start();
+        // Todos os nós, líderes ou não, entram em modo seguidor para auditoria
+        startFollowerMode();
+    }
+
+    private void submitLocalBu() {
+        System.out.println(config.urnId + " submitting BU...");
         try {
-            Map<String, Integer> consolidatedVotes = new HashMap<>();
-            System.out.println("Consolidating votes...");
-            byte[] data;
-            while ((data = queue.consumeBytes()) != null) {
-                BuData bu = gson.fromJson(new String(data), BuData.class);
-
-                for (Map.Entry<String, Integer> entry : bu.votes.entrySet()) {
-                    consolidatedVotes.merge(entry.getKey(), entry.getValue(), Integer::sum);
-                }
-            }
-
-            currentTally.votes = consolidatedVotes;
-            String path = "regional_tally_" + region + ".json";
-            Files.write(Paths.get(path), gson.toJson(currentTally).getBytes());
-            System.out.println("Tally written to " + path);
-        } finally {
-            lock.unlock();
+            queue.produce(gson.toJson(localBus).getBytes());
+        } catch (Exception e) {
+            System.err.println("Error submitting BU: " + e.getMessage());
         }
     }
 
-    public void notLeader() throws Exception {
-        System.out.println(urnId + " is a FOLLOWER in region " + region);
+    private void waitForAllUrns() {
+        try {
+            System.out.println(config.urnId + " waiting for all urns to submit...");
+            barrier.enter();
+            System.out.println("All urns have submitted their BUs");
+        } catch (Exception e) {
+            System.err.println("Error waiting for barrier: " + e.getMessage());
+        }
+    }
 
+    private void tryBecomeLeader() {
+        try {
+            leader.elect();
+            System.out.println(config.urnId + " is now LEADER of region " + config.region);
+            LeaderProcessing();
+        } catch (Exception e) {
+            System.err.println("Leadership election failed: " + e.getMessage());
+        }
+    }
+
+    private void LeaderProcessing() throws Exception {
+        RegionalTally tally = consolidateVotes();
+        storeTally(tally);
+        System.out.println("Regional tally completed and stored");
+    }
+
+    private RegionalTally consolidateVotes() throws Exception {
+        Map<String, Integer> consolidatedVotes = new HashMap<>();
+        Map<String, BuData> urnBus = new HashMap<>();
+        byte[] data;
+
+        while ((data = queue.consumeBytes()) != null) {
+            BuData bu = gson.fromJson(new String(data), BuData.class);
+            urnBus.put(bu.urnId, bu);
+            bu.votes.forEach((candidate, votes) ->
+                consolidatedVotes.merge(candidate, votes, Integer::sum));
+        }
+
+        RegionalTally tally = new RegionalTally(config.region);
+        tally.votes = consolidatedVotes;
+        tally.urnBus = urnBus;
+        return tally;
+    }
+
+    private void storeTally(RegionalTally tally) throws Exception {
+        String nodePath = "/tallies/" + config.region;
+        byte[] tallyData = gson.toJson(tally).getBytes();
+        dataStore.store(nodePath, tallyData);
+        
+        // Also write to local file
+        String fileName = "regional_tally_" + config.region + ".json";
+        Files.write(Paths.get(fileName), tallyData);
+    }
+
+    private void startFollowerMode() {
+        System.out.println(config.urnId + " running as FOLLOWER in region " + config.region);
+        
         new Thread(() -> {
             while (true) {
                 try {
-                    String path = "regional_tally_" + region + ".json";
-                    if (!Files.exists(Paths.get(path))) {
-                        Thread.sleep(1000);
-                        continue;
-                    }
-
-                    String tallyJson = new String(Files.readAllBytes(Paths.get(path)));
-                    RegionalTally latestTally = gson.fromJson(tallyJson, RegionalTally.class);
-                    
-                    Map<String, Integer> expected = new HashMap<>();
-                    for (BuData bu : localBus) {
-                        for (Map.Entry<String, Integer> entry : bu.votes.entrySet()) {
-                            expected.merge(entry.getKey(), entry.getValue(), Integer::sum);
-                        }
-                    }
-
-                    boolean match = expected.equals(latestTally.votes);
-                    System.out.println(match ? "Audit successful." : "AUDIT FAILED!");
-
+                    auditTally();
                     Thread.sleep(5000);
+                } catch (InterruptedException e) {
+                    break;
                 } catch (Exception e) {
-                    e.printStackTrace();
+                    System.err.println("Audit error: " + e.getMessage());
                 }
             }
         }).start();
     }
-}
 
-class UrnConfig {
-    String urnId;
-    String region;
-    int groupSize;
-    int id;
+    private void auditTally() throws Exception {
+        String nodePath = "/tallies/" + config.region + "/result";
+        byte[] tallyData = dataStore.retrieve(nodePath);
+
+        if (tallyData == null) {
+            return; // No tally available yet
+        }
+
+        RegionalTally tally = gson.fromJson(new String(tallyData), RegionalTally.class);
+
+        // Check this urn's BU matches the one in the tally
+        BuData myBu = tally.urnBus.get(config.urnId);
+        boolean myBuMatches = myBu != null && myBu.votes.equals(localBus.votes);
+
+        // Check sum of all BUs matches the total
+        Map<String, Integer> sumVotes = new HashMap<>();
+        for (BuData bu : tally.urnBus.values()) {
+            bu.votes.forEach((candidate, votes) ->
+                sumVotes.merge(candidate, votes, Integer::sum));
+        }
+        boolean sumMatches = sumVotes.equals(tally.votes);
+
+        boolean auditPassed = myBuMatches && sumMatches;
+        System.out.println(config.urnId + " audit: " + (auditPassed ? "PASSED" : "FAILED"));
+    }
 }

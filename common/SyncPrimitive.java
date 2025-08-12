@@ -87,11 +87,6 @@ public class SyncPrimitive implements Watcher {
         }
 
         boolean leave() throws KeeperException, InterruptedException{
-            // In the original, this would delete the node created in enter().
-            // However, the node path is not stored. For this to work correctly,
-            // the path from enter() should be stored in a member variable.
-            // For now, assuming ephemeral nodes are cleaned up by session close.
-            // A correct implementation would be: zk.delete(this.myNodePath, -1);
             while (true) {
                 synchronized (mutex) {
                     List<String> list = zk.getChildren(root, true);
@@ -106,7 +101,7 @@ public class SyncPrimitive implements Watcher {
     }
 
     /**
-     * Producer-Consumer Queue: A distributed FIFO queue.
+     * Producer-Consumer Queue
      */
     static public class Queue extends SyncPrimitive {
         public Queue(String address, String name) {
@@ -321,6 +316,53 @@ public class SyncPrimitive implements Watcher {
         }
     }
 
+
+    /**
+     * DataStore:
+     * Store and retrieve byte data at specific ZooKeeper node addresses.
+     */
+    static public class DataStore extends SyncPrimitive {
+        
+        public DataStore(String address) {
+            super(address);
+        }
+
+        /**
+         * Store data at the given node path.
+         * @param nodePath The ZooKeeper node path to store data at
+         * @param data The data to store
+         * @return true if successful
+         */
+        public boolean store(String nodePath, byte[] data) throws KeeperException, InterruptedException {
+            try {
+                Stat s = zk.exists(nodePath, false);
+                if (s == null) {
+                    // Create the node and any parent paths if they don't exist
+                    ensurePathExists(nodePath.substring(0, nodePath.lastIndexOf('/')));
+                    zk.create(nodePath, data, Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
+                } else {
+                    zk.setData(nodePath, data, -1);
+                }
+                return true;
+            } catch (KeeperException e) {
+                System.out.println("Error storing data at " + nodePath + ": " + e.toString());
+                return false;
+            }
+        }
+
+        /**
+         * Retrieve data from the given node path.
+         * @param nodePath The ZooKeeper node path to retrieve data from
+         * @return The data as byte array, or null if node doesn't exist
+         */
+        public byte[] retrieve(String nodePath) throws KeeperException, InterruptedException {
+            try {
+                return zk.getData(nodePath, false, null);
+            } catch (KeeperException.NoNodeException e) {
+                return null;
+            }
+        }
+    }
     // --- Main methods for testing ---
     
     public static void leaderElectionTest(String args[]) {
