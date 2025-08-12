@@ -1,8 +1,8 @@
 {
-  "urnId": "urn-101",
-  "region": "SP",
+  "urnId": "urn-202",
+  "region": "RJ",
   "groupSize": 2,
-  "id": 1,
+  "id": 2,
   "votes": {
     "Candidate A": 100,
     "Candidate B": 100
