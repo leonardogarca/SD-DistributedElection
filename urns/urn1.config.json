@@ -2,5 +2,9 @@
   "urnId": "urn-101",
   "region": "SP",
   "groupSize": 2,
-  "id": 1
+  "id": 1,
+  "votes": {
+    "Candidate A": 123,
+    "Candidate B": 99
+  }
 }

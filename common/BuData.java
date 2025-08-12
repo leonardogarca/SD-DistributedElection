@@ -5,11 +5,11 @@ import java.util.Map;
 
 public class BuData {
     public String region;
-    public String sectionId;
+    public String urnId;
     public Map<String, Integer> votes;
 
 
     public String toMessage() {
-        return region + sectionId + votes.toString();
+        return region + urnId + votes.toString();
     }
 }
