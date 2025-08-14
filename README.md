@@ -4,7 +4,6 @@ Projeto aberto da disciplina de Sistemas Distribuídos - 2025Q2, implementando u
 
 ![Exemplo de rede Superpeer](superpeer.png)
 
-*Figura: Arquitetura Superpeer utilizada no sistema.*
 
 ## 🔧 Tecnologias
 Java, Apache ZooKeeper
