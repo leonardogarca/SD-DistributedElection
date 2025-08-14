@@ -1,3 +1,16 @@
+/**
+ * SyncPrimitive.java
+ * 
+ * Este código foi fornecido pelo professor como base para o projeto de Sistemas Distribuídos.
+ * 
+ * Implementa primitivas de sincronização distribuída usando Apache ZooKeeper:
+ * - Barrier: Barreira distribuída para sincronização de múltiplos processos.
+ * - Queue: Fila produtor-consumidor distribuída.
+ * - Lock: Exclusão mútua distribuída (lock).
+ * - Leader: Eleição de líder entre múltiplos nós.
+ * - DataStore: Armazenamento e recuperação de dados em nós do ZooKeeper.
+ */
+
 package common;
 import java.io.IOException;
 import java.net.InetAddress;

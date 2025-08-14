@@ -4,17 +4,24 @@ import java.util.*;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 
-
-// Ponto de entrada
+/**
+ * UrnNodeApplication
+ * 
+ * Ponto de entrada para um nó de urna eletrônica em uma eleição distribuída.
+ * Cada instância representa uma urna que participa do processo de apuração regional,
+ * auditoria e consolidação dos resultados totais usando Apache ZooKeeper para coordenação.
+ */
 public class UrnNodeApplication {
-    
-    // Main padrão que certifica se o arquivo de configuração foi passado como argumento
+
+    /**
+     * Main padrão que certifica se o arquivo de configuração foi passado como argumento.
+     */
     public static void main(String[] args) throws Exception {
         if (args.length < 1) {
             System.err.println("Usage: java UrnNodeApplication <config-file>");
             System.exit(1);
         }
-        
+
         // Lê o arquivo de configuração e inicializa a UrnNode
         String json = new String(Files.readAllBytes(Paths.get(args[0])));
         UrnConfig config = new Gson().fromJson(json, UrnConfig.class);
@@ -34,37 +41,40 @@ class UrnNode {
     private final SyncPrimitive.DataStore dataStore;
     private final BuData localBus;
     private final Gson gson = new Gson();
-    
-    // Flag para caso a urna seja lider e seguidor ao mesmo tempo, assim ela não sai antes da thread de líder terminar
     private volatile boolean canExit = true;
 
-    // Construtor que inicializa os primitivos de sincronização e lê o BU da Urna
+    /**
+     * Construtor que inicializa os primitivos de sincronização e lê o BU da Urna.
+     */
     public UrnNode(UrnConfig config) throws Exception {
         this.config = config;
         this.leader = new SyncPrimitive.Leader(zkAddress, "/leaders/" + config.region, "/leader", config.id);
         this.lock = new SyncPrimitive.Lock(zkAddress, "/tallies/total");
         this.queue = new SyncPrimitive.Queue(zkAddress, "/queues/" + config.region);
         this.barrier = new SyncPrimitive.Barrier(zkAddress, "/urns/" + config.region, config.groupSize);
-        this.auditBarrier = new SyncPrimitive.Barrier(zkAddress, "/audited/" + config.region, config.groupSize+1); // +1 porque o líder também entra na barreira de auditoria
+        this.auditBarrier = new SyncPrimitive.Barrier(zkAddress, "/audited/" + config.region, config.groupSize + 1); // +1 para o líder
         this.dataStore = new SyncPrimitive.DataStore(zkAddress);
         this.localBus = BuReader.readLocalBU(config);
     }
 
+    /**
+     * Inicia o nó da urna, enviando o BU, sincronizando com o grupo,
+     * participando da eleição de líder e realizando auditoria.
+     */
     public void start() throws Exception {
-        // Manda BU local para o Zookeeper usando a queue
         submitLocalBu();
-
-        // Entra na barreira para esperar que todas as urnas do grupo enviem seus votos para continuar
         enterBarrier(barrier, "submission");
-        
-        // Como o processo de lider é bloquante, rodamos em uma thread separada
-        // (O SyncPrimitive do laboratório é assim, não reclama comigo)
+
+        // Processo de liderança em thread separada
         new Thread(this::tryBecomeLeader).start();
-        
-        // Todos os nós, mesmo sendo lider, entram em modo seguidor para auditoria
+
+        // Todos os nós auditam a apuração regional
         startFollowerMode();
     }
 
+    /**
+     * Envia o BU local para o Zookeeper usando a fila.
+     */
     private void submitLocalBu() {
         System.out.println(config.urnId + " submitting BU...");
         try {
@@ -74,11 +84,12 @@ class UrnNode {
         }
     }
 
+    /**
+     * Tenta tornar-se líder regional em uma thread separada.
+     */
     private void tryBecomeLeader() {
         try {
-            // A thread da urna que não conseguir ser líder vai ficar presa aqui
             leader.elect();
-            // A partir daqui, só a urna líder roda o codigo restante
             System.out.println(config.urnId + " is now LEADER of region " + config.region);
             canExit = false;
             LeaderProcessing();
@@ -87,23 +98,20 @@ class UrnNode {
         }
     }
 
+    /**
+     * Consolida os votos regionais, publica apuração, aguarda auditoria
+     * e atualiza o resultado total com exclusividade.
+     */
     private void LeaderProcessing() throws Exception {
-        // Consolidar votos de todas as BUs na fila
-        Map<String, Integer> consolidatedVotes = new HashMap<>();
-        Map<String, BuData> urnBus = new HashMap<>();
-        byte[] data;
+        RegionalTally tally = new RegionalTally(config.region);
 
+        // Consome todos os BUs da fila e agrega na apuração regional
+        byte[] data;
         while ((data = queue.consumeBytes()) != null) {
-            BuData bu = gson.fromJson(new String(data), BuData.class);
-            urnBus.put(bu.urnId, bu);
-            bu.votes.forEach((candidate, votes) ->
-                consolidatedVotes.merge(candidate, votes, Integer::sum));
+            BuData bu = new BuData(new String(data));
+            tally.mergeBu(bu);
             System.out.println("Consolidated votes from " + bu.urnId);
         }
-
-        RegionalTally tally = new RegionalTally(config.region);
-        tally.votes = consolidatedVotes;
-        tally.urnBus = urnBus;
 
         // Salva a apuração regional no Zookeeper
         String nodePath = "/tallies/" + config.region;
@@ -111,66 +119,46 @@ class UrnNode {
         dataStore.store(nodePath, tallyData);
         System.out.println("Regional tally completed and stored");
 
-        
-        // Entra na barreira de auditoria, para esperar os seguidores fazerem a auditoria
+        // Aguarda auditoria dos seguidores
         enterBarrier(auditBarrier, "audit as leader");
         System.out.println(config.region + " passed audit barrier, updating total tally...");
 
-        // Passada a auditoria, atualiza a apuração total
-        // Usa lock para garantir exclusividade na atualização
+        // Atualiza apuração total com exclusividade
         lock.lock();
         System.out.println(config.urnId + " acquired lock for total tally update");
-        Thread.sleep(2000); // Tempo apena para demonstrar o bloqueio
+        Thread.sleep(2000); // Apenas para demonstrar o bloqueio
+
         try {
             String totalTallyPath = "/tallies/total";
             byte[] totalData = dataStore.retrieve(totalTallyPath);
-            Map<String, Integer> totalVotes = new HashMap<>();
-            Map<String, BuData> totalUrnBus = new HashMap<>();
 
-            if (totalData != null) {
-                RegionalTally totalTally = gson.fromJson(new String(totalData), RegionalTally.class);
-                if (totalTally != null) {
-                    if (totalTally.votes != null) {
-                        totalVotes.putAll(totalTally.votes);
-                    }
-                    if (totalTally.urnBus != null) {
-                        totalUrnBus.putAll(totalTally.urnBus);
-                    }
-                }
-            }
+            RegionalTally totalTally = (totalData != null)
+                ? new RegionalTally(new String(totalData))
+                : new RegionalTally("total");
 
-            // Realiza a soma das apurações
-            for (Map.Entry<String, Integer> entry : tally.votes.entrySet()) {
-                totalVotes.merge(entry.getKey(), entry.getValue(), Integer::sum);
-            }
-            // Adiciona as BUs da apuração regional
-            for (Map.Entry<String, BuData> entry : tally.urnBus.entrySet()) {
-                totalUrnBus.put(entry.getKey(), entry.getValue());
-            }
+            totalTally.mergeTally(tally);
 
-            RegionalTally newTotalTally = new RegionalTally("total");
-            newTotalTally.votes = totalVotes;
-            newTotalTally.urnBus = totalUrnBus;
-
-            byte[] newTotalData = gson.toJson(newTotalTally).getBytes();
+            byte[] newTotalData = gson.toJson(totalTally).getBytes();
             dataStore.store(totalTallyPath, newTotalData);
 
             System.out.println("Total tally updated and stored");
         } finally {
             lock.unlock();
-            canExit = true; // Permite que a thread de seguidor saia
-            System.exit(0); // Finaliza a aplicação
+            canExit = true;
+            System.exit(0);
         }
     }
 
+    /**
+     * Executa o modo seguidor, auditando a apuração regional e criando alarmes em caso de falha.
+     */
     private void startFollowerMode() {
         System.out.println(config.urnId + " running as FOLLOWER in region " + config.region);
-        
-        // Tenta pegar a apuração do grupo no Zookeeper
-        // Se não estiver disponível, espera e tenta novamente
+
         String nodePath = "/tallies/" + config.region;
         byte[] tallyData = null;
 
+        // Aguarda até que a apuração regional esteja disponível
         while (tallyData == null) {
             try {
                 tallyData = dataStore.retrieve(nodePath);
@@ -182,18 +170,16 @@ class UrnNode {
                 try { Thread.sleep(1000); } catch (InterruptedException ignored) {}
             }
         }
-        RegionalTally tally = gson.fromJson(new String(tallyData), RegionalTally.class);
 
-        // Executar auditoria da apuração
+        RegionalTally tally = new RegionalTally(new String(tallyData));
+
+        // Auditoria da apuração
         boolean auditPassed = auditTally(tally, localBus, config.urnId);
         System.out.println(config.urnId + " audit: " + (auditPassed ? "PASSED" : "FAILED"));
 
-        // Se passou na auditoria, entra na barreira de auditoria
         if (auditPassed) {
             enterBarrier(auditBarrier, "audit");
-        } 
-        // Se não passou, cria um znode de alarme
-        else {
+        } else {
             String alarmPath = "/alarms/" + config.urnId;
             String alarmMsg = config.urnId + " audit failed in region " + config.region;
             try {
@@ -203,34 +189,28 @@ class UrnNode {
                 System.err.println("Error creating alarm: " + e.getMessage());
             }
         }
-        
-        
-        while(true) {
-            // Confere se não há uma thread de líder rodando
-            // Se não houver, pode sair
+
+        // Aguarda até que a thread de líder termine antes de sair
+        while (true) {
             if (canExit) {
                 System.exit(0);
             }
         }
     }
 
+    /**
+     * Realiza a auditoria da apuração regional.
+     */
     private boolean auditTally(RegionalTally tally, BuData localBus, String urnId) {
-        // Confere se a BU local bate com a BU armazenada na apuração do lider
         BuData myBu = tally.urnBus.get(urnId);
-        boolean myBuMatches = myBu != null && myBu.votes.equals(localBus.votes);
-
-        // Confere se a soma dos votos na tally bate com a soma dos votos nas BUs
-        Map<String, Integer> sumVotes = new HashMap<>();
-        for (BuData bu : tally.urnBus.values()) {
-            bu.votes.forEach((candidate, votes) ->
-                sumVotes.merge(candidate, votes, Integer::sum));
-        }
-        boolean sumMatches = sumVotes.equals(tally.votes);
-
+        boolean myBuMatches = localBus.votesEqual(myBu);
+        boolean sumMatches = tally.sumVotesFromBus().equals(tally.votes);
         return myBuMatches && sumMatches;
     }
 
-    // Helper para entrar em barreiras
+    /**
+     * Helper para entrar em barreiras de sincronização.
+     */
     private void enterBarrier(SyncPrimitive.Barrier barrier, String action) {
         try {
             System.out.println(config.urnId + " entering " + action + " barrier...");
