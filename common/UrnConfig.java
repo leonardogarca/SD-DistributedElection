@@ -6,7 +6,7 @@
  * - O nome da região.
  * - O tamanho do grupo de urnas.
  * - O identificador único da urna no grupo.
- * - Um mapa de votos por candidato (opcional, para inicialização local).
+ * - Um mapa de votos por candidato.
  */
 package common;
 
