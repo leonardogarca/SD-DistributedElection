@@ -3,6 +3,7 @@
 Projeto aberto da disciplina de Sistemas Distribuídos - 2025Q2, implementando uma apuração distribuída de votos de urnas eletrônicas em uma rede Superpeer.
 
 ![Exemplo de rede Superpeer](superpeer.png)
+
 *Figura: Arquitetura Superpeer utilizada no sistema.*
 
 ## 🔧 Tecnologias
